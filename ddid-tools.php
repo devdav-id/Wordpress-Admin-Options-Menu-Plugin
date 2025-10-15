@@ -3,7 +3,7 @@
  * Plugin Name: DDID Tools
  * Plugin URI: https://github.com/devdav-id/Wordpress-Admin-Options-Menu-Plugin
  * Description: A WordPress plugin that adds a DDID Tools page to the admin menu.
- * Version: 1.0.1
+ * Version: 1.0.2
  * Author: devdav-id
  * Author URI: https://github.com/devdav-id
  * License: GPL2

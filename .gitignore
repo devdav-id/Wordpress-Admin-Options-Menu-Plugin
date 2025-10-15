@@ -33,3 +33,5 @@ vendor/
 # Build artifacts
 dist/
 build/
+
+wordpress-plugin-updater.php
