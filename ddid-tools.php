@@ -18,6 +18,18 @@ if (!defined('WPINC')) {
 // Define plugin version
 define('DDID_TOOLS_VERSION', '1.0.0');
 
+// Include GitHub updater
+require_once plugin_dir_path(__FILE__) . 'wordpress-github-updater.php';
+
+// Initialize GitHub updater
+if (is_admin()) {
+    new WordPress_GitHub_Updater(
+        __FILE__,
+        'devdav-id',
+        'Wordpress-Admin-Options-Menu-Plugin'
+    );
+}
+
 /**
  * Register the admin menu
  */
