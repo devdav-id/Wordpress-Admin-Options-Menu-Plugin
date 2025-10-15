@@ -1,307 +1,324 @@
 <?php
+
 /**
- * WordPress GitHub Updater
+ * WordPress GitHub Plugin Updater
  * 
- * This class enables automatic updates for WordPress plugins hosted on GitHub.
- * It checks for new releases and integrates with WordPress's native update system.
- * 
- * @package DDID_Tools
- * @version 1.0.2
+ * 1. Register custom headers (GitHub Plugin URI, GitHub Plugin Folder)
+ * 2. Initialize updater class and read GitHub config
+ * 3. Check GitHub API for newer versions
+ * 4. Add WordPress update notifications
+ * 5. Handle subfolder extraction during updates
+ * 6. Force update checks and debug info
  */
 
-// If this file is called directly, abort.
-if (!defined('WPINC')) {
-    die;
+// Exit if accessed directly
+defined('ABSPATH') || exit;
+
+/**
+ * STEP 1: Register Custom Headers from main plugin file
+ * ===================================================
+ */
+add_filter('extra_plugin_headers', function ($headers) {
+	$headers['GitHub Plugin URI'] = 'GitHub Plugin URI';
+	$headers['GitHub Plugin Folder'] = 'GitHub Plugin Folder';
+	return $headers;
+});
+
+/**
+ * STEP 2: Initialize Updater Class
+ * ================================
+ * Main class that reads GitHub config in plugin header and sets up WordPress hooks
+ */
+if (!class_exists('WordPress_GitHub_Updater')) {
+
+	class WordPress_GitHub_Updater
+	{
+
+		private $plugin_file;
+		private $plugin_slug;
+		private $plugin_data;
+		private $github_repo;
+		private $github_folder;
+		private $version;
+
+		public function __construct($plugin_file)
+		{
+			$this->plugin_file = $plugin_file;
+			$this->plugin_slug = plugin_basename($plugin_file);
+			
+			// Get plugin data including custom headers
+			if (!function_exists('get_plugin_data')) {
+				require_once(ABSPATH . 'wp-admin/includes/plugin.php');
+			}
+			$this->plugin_data = get_plugin_data($plugin_file);
+
+			// Read GitHub config from plugin headers
+			$this->github_repo = $this->plugin_data['GitHub Plugin URI'];
+			$this->github_folder = $this->plugin_data['GitHub Plugin Folder'];
+			$this->version = $this->plugin_data['Version'];
+
+			// set up wordpress hooks
+			if ($this->github_repo) {
+				add_filter('pre_set_site_transient_update_plugins', array($this, 'check_for_update'));
+				add_filter('upgrader_source_selection', array($this, 'fix_source_folder'), 10, 4);
+				add_action('admin_init', array($this, 'show_update_notification'));
+			}
+		}
+		/**
+		 * STEP 3: Check GitHub for Updates
+		 * ===============================
+		 * Compare local vs GitHub version and add to WordPress update system
+		 */
+		public function check_for_update($transient)
+		{
+			error_log("WordPress GitHub Plugin Updater: check_for_update called");
+			error_log("WordPress GitHub Plugin Updater: Plugin = " . $this->plugin_slug);
+			error_log("WordPress GitHub Plugin Updater: Version = " . $this->version);
+
+			if (empty($transient->checked)) {
+				return $transient;
+			}
+
+			$remote_version = $this->get_remote_version();
+			error_log("WordPress GitHub Plugin Updater: Remote version = " . $remote_version);
+
+			if (version_compare($this->version, $remote_version, '<')) {
+				
+				$update_data = array(
+					'slug' => dirname($this->plugin_slug),
+					'plugin' => $this->plugin_slug,
+					'new_version' => $remote_version,
+					'url' => 'https://github.com/' . $this->github_repo,
+					'package' => $this->get_download_url(),
+					'tested' => get_bloginfo('version'),
+					'requires_php' => '7.4',
+					'compatibility' => array()
+				);
+
+				$transient->response[$this->plugin_slug] = (object) $update_data;
+
+				// Also add to checked array to ensure WordPress sees it
+				if (!isset($transient->checked)) {
+					$transient->checked = array();
+				}
+				$transient->checked[$this->plugin_slug] = $this->version;
+
+			} else {
+				// Remove from updates if no update needed
+				unset($transient->response[$this->plugin_slug]);
+			}
+
+			return $transient;
+		}
+
+		/**
+		 * STEP 4: Show Update Notifications
+		 * ================================
+		 */
+		public function show_update_notification()
+		{
+			$update_plugins = get_site_transient('update_plugins');
+
+			if (!empty($update_plugins) && isset($update_plugins->response[$this->plugin_slug])) {
+				add_action('admin_notices', array($this, 'admin_notice_update'));
+			}
+		}
+
+		// displays on wordpress backend
+		public function admin_notice_update()
+		{
+			if (get_current_screen()->id === 'plugins') {
+				$update_plugins = get_site_transient('update_plugins');
+				if (isset($update_plugins->response[$this->plugin_slug])) {
+					$update_info = $update_plugins->response[$this->plugin_slug];
+					echo '<div class="notice notice-warning">';
+					echo '<p><strong>Plugin Update Available:</strong> Version ' . $update_info->new_version . ' is available for ' . $this->plugin_data['Name'] . '</p>';
+					echo '</div>';
+				}
+			}
+		}
+
+		private function get_remote_version()
+		{
+			// If no GitHub folder specified, look in root
+			$file_path = $this->github_folder ? $this->github_folder . '/' : '';
+			$file_path .= basename($this->plugin_file);
+			
+			$request = wp_remote_get('https://api.github.com/repos/' . $this->github_repo . '/contents/' . $file_path);
+
+			if (!is_wp_error($request) && wp_remote_retrieve_response_code($request) === 200) {
+				$body = wp_remote_retrieve_body($request);
+				$data = json_decode($body, true);
+
+				if (isset($data['content'])) {
+					$content = base64_decode($data['content']);
+
+					if (preg_match('/Version:\s*(.+)/i', $content, $matches)) {
+						return trim($matches[1]);
+					}
+				}
+			}
+
+			return $this->version;
+		}
+
+		private function get_download_url()
+		{
+			return 'https://github.com/' . $this->github_repo . '/archive/refs/heads/main.zip';
+		}
+
+		/**
+		 * STEP 5: Fix Subfolder Extraction
+		 * ================================
+		 */
+		public function fix_source_folder($source, $remote_source, $upgrader, $hook_extra)
+		{
+			if (isset($hook_extra['plugin']) && $hook_extra['plugin'] === $this->plugin_slug) {
+
+				// Get repository name from GitHub URI
+				$repo_parts = explode('/', $this->github_repo);
+				$repo_name = end($repo_parts);
+				
+				// GitHub creates folder with repo-name-branch format
+				$expected_folder = $repo_name . '-main';
+				
+				if ($this->github_folder) {
+					// If subfolder specified, navigate to it
+					$corrected_source = $remote_source . '/' . $expected_folder . '/' . $this->github_folder . '/';
+				} else {
+					// If no subfolder, use root of repository
+					$corrected_source = $remote_source . '/' . $expected_folder . '/';
+				}
+
+				if (is_dir($corrected_source)) {
+					return $corrected_source;
+				} else {
+					// Try to find the actual folder structure
+					if (is_dir($remote_source)) {
+						$dirs = scandir($remote_source);
+						foreach ($dirs as $dir) {
+							if ($dir !== '.' && $dir !== '..' && is_dir($remote_source . '/' . $dir)) {
+								
+								if ($this->github_folder) {
+									// Check if this directory contains our plugin folder
+									$potential_plugin_path = $remote_source . '/' . $dir . '/' . $this->github_folder . '/';
+									if (is_dir($potential_plugin_path)) {
+										return $potential_plugin_path;
+									}
+								} else {
+									// Check if this directory contains the main plugin file
+									$potential_plugin_path = $remote_source . '/' . $dir . '/';
+									if (file_exists($potential_plugin_path . basename($this->plugin_file))) {
+										return $potential_plugin_path;
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+
+			return $source;
+		}
+	}
 }
 
-class WordPress_GitHub_Updater {
-    
-    /**
-     * GitHub username
-     * @var string
-     */
-    private $username;
-    
-    /**
-     * GitHub repository name
-     * @var string
-     */
-    private $repository;
-    
-    /**
-     * Plugin slug
-     * @var string
-     */
-    private $plugin_slug;
-    
-    /**
-     * Plugin file path (relative to plugins directory)
-     * @var string
-     */
-    private $plugin_file;
-    
-    /**
-     * Current plugin version
-     * @var string
-     */
-    private $current_version;
-    
-    /**
-     * GitHub API response cache
-     * @var object
-     */
-    private $github_response;
-    
-    /**
-     * Access token for private repositories (optional)
-     * @var string
-     */
-    private $access_token;
-    
-    /**
-     * Constructor
-     * 
-     * @param string $plugin_file Plugin file path
-     * @param string $github_username GitHub username
-     * @param string $github_repo GitHub repository name
-     * @param string $access_token GitHub access token (optional, for private repos)
-     */
-    public function __construct($plugin_file, $github_username, $github_repo, $access_token = '') {
-        $this->plugin_file = plugin_basename($plugin_file);
-        $this->username = $github_username;
-        $this->repository = $github_repo;
-        $this->plugin_slug = dirname($this->plugin_file);
-        $this->access_token = $access_token;
-        
-        // Get current version from plugin data
-        if (!function_exists('get_plugin_data')) {
-            require_once(ABSPATH . 'wp-admin/includes/plugin.php');
-        }
-        $plugin_data = get_plugin_data($plugin_file);
-        $this->current_version = $plugin_data['Version'];
-        
-        // Hook into WordPress
-        add_filter('pre_set_site_transient_update_plugins', array($this, 'check_for_update'));
-        add_filter('plugins_api', array($this, 'plugin_info'), 10, 3);
-        add_filter('upgrader_source_selection', array($this, 'rename_github_folder'), 10, 4);
-        add_filter('upgrader_post_install', array($this, 'after_update'), 10, 3);
-    }
-    
-    /**
-     * Get information from GitHub API
-     * 
-     * @return object|bool GitHub release data or false on failure
-     */
-    private function get_github_data() {
-        // Return cached response if available
-        if (!empty($this->github_response)) {
-            return $this->github_response;
-        }
-        
-        // Build API URL for latest release
-        $api_url = sprintf(
-            'https://api.github.com/repos/%s/%s/releases/latest',
-            $this->username,
-            $this->repository
-        );
-        
-        // Set up request arguments
-        $args = array(
-            'headers' => array(
-                'Accept' => 'application/vnd.github.v3+json',
-            ),
-            'timeout' => 15,
-        );
-        
-        // Add authorization header if access token is provided
-        if (!empty($this->access_token)) {
-            $args['headers']['Authorization'] = 'token ' . $this->access_token;
-        }
-        
-        // Make API request
-        $response = wp_remote_get($api_url, $args);
-        
-        // Check for errors
-        if (is_wp_error($response)) {
-            return false;
-        }
-        
-        $code = wp_remote_retrieve_response_code($response);
-        if ($code !== 200) {
-            return false;
-        }
-        
-        // Parse response
-        $body = wp_remote_retrieve_body($response);
-        $data = json_decode($body);
-        
-        if (empty($data)) {
-            return false;
-        }
-        
-        // Cache the response
-        $this->github_response = $data;
-        
-        return $data;
-    }
-    
-    /**
-     * Check for plugin updates
-     * 
-     * @param object $transient WordPress update transient
-     * @return object Modified transient
-     */
-    public function check_for_update($transient) {
-        // Check if transient has checked property
-        if (empty($transient->checked)) {
-            return $transient;
-        }
-        
-        // Get GitHub data
-        $github_data = $this->get_github_data();
-        
-        if ($github_data === false) {
-            return $transient;
-        }
-        
-        // Get version from tag name (remove 'v' prefix if present)
-        $github_version = $github_data->tag_name;
-        if (strpos($github_version, 'v') === 0) {
-            $github_version = substr($github_version, 1);
-        }
-        
-        // Compare versions
-        if (version_compare($this->current_version, $github_version, '<')) {
-            // Get download URL (zipball)
-            $download_url = isset($github_data->zipball_url) ? $github_data->zipball_url : '';
-            
-            // If access token is provided, add it to download URL
-            if (!empty($this->access_token) && !empty($download_url)) {
-                $download_url = add_query_arg('access_token', $this->access_token, $download_url);
-            }
-            
-            // Build update object
-            $plugin_update = new stdClass();
-            $plugin_update->slug = $this->plugin_slug;
-            $plugin_update->new_version = $github_version;
-            $plugin_update->url = isset($github_data->html_url) ? $github_data->html_url : '';
-            $plugin_update->package = $download_url;
-            
-            // Add to transient
-            $transient->response[$this->plugin_file] = $plugin_update;
-        }
-        
-        return $transient;
-    }
-    
-    /**
-     * Provide plugin information for update screen
-     * 
-     * @param false|object|array $result The result object or array
-     * @param string $action The type of information being requested
-     * @param object $args Plugin API arguments
-     * @return object Plugin information
-     */
-    public function plugin_info($result, $action, $args) {
-        // Check if this is our plugin
-        if ($action !== 'plugin_information') {
-            return $result;
-        }
-        
-        if (empty($args->slug) || $args->slug !== $this->plugin_slug) {
-            return $result;
-        }
-        
-        // Get GitHub data
-        $github_data = $this->get_github_data();
-        
-        if ($github_data === false) {
-            return $result;
-        }
-        
-        // Get version from tag name
-        $github_version = $github_data->tag_name;
-        if (strpos($github_version, 'v') === 0) {
-            $github_version = substr($github_version, 1);
-        }
-        
-        // Build plugin info object
-        $plugin_info = new stdClass();
-        $plugin_info->name = isset($github_data->name) ? $github_data->name : $this->repository;
-        $plugin_info->slug = $this->plugin_slug;
-        $plugin_info->version = $github_version;
-        $plugin_info->author = '<a href="https://github.com/' . $this->username . '">' . $this->username . '</a>';
-        $plugin_info->homepage = 'https://github.com/' . $this->username . '/' . $this->repository;
-        $plugin_info->requires = '5.0';
-        $plugin_info->tested = get_bloginfo('version');
-        $plugin_info->downloaded = 0;
-        $plugin_info->last_updated = isset($github_data->published_at) ? $github_data->published_at : '';
-        $plugin_info->sections = array(
-            'description' => isset($github_data->body) ? $github_data->body : 'No description available.',
-            'changelog' => isset($github_data->body) ? '<pre>' . $github_data->body . '</pre>' : 'No changelog available.',
-        );
-        $plugin_info->download_link = isset($github_data->zipball_url) ? $github_data->zipball_url : '';
-        
-        // Add access token to download link if provided
-        if (!empty($this->access_token) && !empty($plugin_info->download_link)) {
-            $plugin_info->download_link = add_query_arg('access_token', $this->access_token, $plugin_info->download_link);
-        }
-        
-        return $plugin_info;
-    }
-    
-    /**
-     * Rename the extracted GitHub folder to match plugin slug
-     * 
-     * @param string $source File source location
-     * @param string $remote_source Remote file source location
-     * @param WP_Upgrader $upgrader WP_Upgrader instance
-     * @param array $hook_extra Extra arguments passed to hooked filters
-     * @return string Modified source location
-     */
-    public function rename_github_folder($source, $remote_source, $upgrader, $hook_extra = array()) {
-        global $wp_filesystem;
-        
-        // Check if this is our plugin
-        if (!isset($hook_extra['plugin']) || $hook_extra['plugin'] !== $this->plugin_file) {
-            return $source;
-        }
-        
-        // Get the plugin folder name
-        $plugin_folder = $this->plugin_slug;
-        
-        // Build the new source path
-        $new_source = trailingslashit($remote_source) . trailingslashit($plugin_folder);
-        
-        // Rename the folder
-        $wp_filesystem->move($source, $new_source);
-        
-        return $new_source;
-    }
-    
-    /**
-     * Perform actions after plugin update
-     * 
-     * @param bool $response Installation response
-     * @param array $hook_extra Extra arguments passed to hooked filters
-     * @param array $result Installation result
-     * @return array Installation result
-     */
-    public function after_update($response, $hook_extra, $result) {
-        global $wp_filesystem;
-        
-        // Get the plugin destination
-        $install_directory = plugin_dir_path($this->plugin_file);
-        $wp_filesystem->move($result['destination'], $install_directory);
-        $result['destination'] = $install_directory;
-        
-        // Reactivate plugin if it was active
-        if (isset($hook_extra['plugin']) && $hook_extra['plugin'] === $this->plugin_file) {
-            if (is_plugin_active($this->plugin_file)) {
-                activate_plugin($this->plugin_file);
-            }
-        }
-        
-        return $result;
-    }
-}
+/**
+ * STEP 6: Force Update Check Handler
+ * =================================
+ * Manual update trigger via URL parameter: ?force_github_check=1
+ */
+add_action('load-plugins.php', function () {
+	if (current_user_can('update_plugins')) {
+		if (isset($_GET['force_github_check'])) {
+			delete_site_transient('update_plugins');
+		}
+	}
+});
+
+/**
+ * STEP 7: Debug Admin Notice
+ * =========================
+ * Show updater status and GitHub version comparison
+ */
+add_action('admin_notices', function () {
+	if (current_user_can('manage_options')) {
+		$current_page = basename($_SERVER['PHP_SELF']);
+
+		// Only show on plugins page
+		if ($current_page == 'plugins.php') {
+			
+			// Get the main plugin file (assumes this updater is in includes/ folder)
+			$plugin_file = dirname(dirname(__FILE__)) . '/' . basename(dirname(dirname(__FILE__))) . '.php';
+			
+			// If that doesn't exist, try common plugin file names
+			if (!file_exists($plugin_file)) {
+				$possible_files = array(
+					dirname(dirname(__FILE__)) . '/wp-plugin-template.php',
+					dirname(dirname(__FILE__)) . '/index.php',
+					dirname(dirname(__FILE__)) . '/main.php'
+				);
+				
+				foreach ($possible_files as $file) {
+					if (file_exists($file)) {
+						$plugin_file = $file;
+						break;
+					}
+				}
+			}
+
+			if (file_exists($plugin_file)) {
+				// Get plugin data
+				if (!function_exists('get_plugin_data')) {
+					require_once(ABSPATH . 'wp-admin/includes/plugin.php');
+				}
+				$plugin_data = get_plugin_data($plugin_file);
+				$current_version = $plugin_data['Version'];
+				$github_repo = $plugin_data['GitHub Plugin URI'];
+				$github_folder = $plugin_data['GitHub Plugin Folder'];
+
+				// Get GitHub version for comparison
+				$github_version = 'Unable to fetch';
+				if ($github_repo) {
+					$file_path = $github_folder ? $github_folder . '/' : '';
+					$file_path .= basename($plugin_file);
+					
+					$request = wp_remote_get('https://api.github.com/repos/' . $github_repo . '/contents/' . $file_path);
+					if (!is_wp_error($request) && wp_remote_retrieve_response_code($request) === 200) {
+						$body = wp_remote_retrieve_body($request);
+						$data = json_decode($body, true);
+						if (isset($data['content'])) {
+							$content = base64_decode($data['content']);
+							if (preg_match('/Version:\s*(.+)/i', $content, $matches)) {
+								$github_version = trim($matches[1]);
+							}
+						}
+					}
+				}
+
+				// display on wordpress backend
+				echo '<div class="notice notice-info is-dismissible">';
+				echo '<p><strong>WordPress GitHub Plugin Updater Debug:</strong><br>';
+				echo 'GitHub Repo: ' . ($github_repo ? $github_repo : 'NOT FOUND') . '<br>';
+				echo 'GitHub Plugin Folder: ' . ($github_folder ? $github_folder : 'ROOT') . '<br>';
+				echo 'Plugin Slug: ' . plugin_basename($plugin_file) . '<br>';
+				echo '---------------<br>';
+				echo 'GitHub Plugin Version: ' . $github_version . '<br>';
+				echo 'WordPress Plugin Version: ' . $current_version . '<br>';
+				echo '<a href="plugins.php?force_github_check=1" class="button">Force Update Check</a></p>';
+				echo '</div>';
+			}
+
+			// Force update check for debugging
+			if (isset($_GET['force_github_check'])) {
+				echo '<div class="notice notice-warning">';
+				echo '<p><strong>Forcing GitHub Update Check...</strong></p>';
+				echo '</div>';
+
+				delete_site_transient('update_plugins');
+				wp_redirect(admin_url('plugins.php'));
+				exit;
+			}
+		}
+	}
+});
