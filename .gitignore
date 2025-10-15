@@ -35,3 +35,4 @@ dist/
 build/
 
 wordpress-plugin-updater.php
+wp-plugin-template.php
