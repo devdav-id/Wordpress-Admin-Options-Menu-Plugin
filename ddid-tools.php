@@ -3,11 +3,14 @@
  * Plugin Name: DDID Tools
  * Plugin URI: https://github.com/devdav-id/Wordpress-Admin-Options-Menu-Plugin
  * Description: A WordPress plugin that adds a DDID Tools page to the admin menu.
- * Version: 1.0.2
+ * Version: 1.0.3
  * Author: devdav-id
  * Author URI: https://github.com/devdav-id
- * License: GPL2
+ * License: GPL v2 or later
+ * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: ddid-tools
+ * GitHub Plugin URI: devdav-id/Wordpress-Admin-Options-Menu-Plugin
+ * GitHub Plugin Folder: 
  */
 
 // If this file is called directly, abort.
@@ -16,18 +19,16 @@ if (!defined('WPINC')) {
 }
 
 // Define plugin version
-define('DDID_TOOLS_VERSION', '1.0.0');
+define('DDID_TOOLS_VERSION', '1.0.2');
 
 // Include GitHub updater
 require_once plugin_dir_path(__FILE__) . 'wordpress-github-updater.php';
 
 // Initialize GitHub updater
 if (is_admin()) {
-    new WordPress_GitHub_Updater(
-        __FILE__,
-        'devdav-id',
-        'Wordpress-Admin-Options-Menu-Plugin'
-    );
+    if (class_exists('WordPress_GitHub_Updater')) {
+        new WordPress_GitHub_Updater(__FILE__);
+    }
 }
 
 /**
