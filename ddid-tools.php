@@ -15,6 +15,9 @@ if (!defined('WPINC')) {
     die;
 }
 
+// Define plugin version
+define('DDID_TOOLS_VERSION', '1.0.0');
+
 /**
  * Register the admin menu
  */
@@ -58,7 +61,7 @@ function ddid_tools_render_page() {
                 <div class="ddid-tools-card">
                     <h3>Plugin Information</h3>
                     <ul>
-                        <li><strong>Version:</strong> 1.0.0</li>
+                        <li><strong>Version:</strong> <?php echo esc_html(DDID_TOOLS_VERSION); ?></li>
                         <li><strong>Status:</strong> Active</li>
                         <li><strong>Purpose:</strong> Site administration tools</li>
                     </ul>
