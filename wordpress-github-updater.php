@@ -20,7 +20,6 @@ defined('ABSPATH') || exit;
  */
 add_filter('extra_plugin_headers', function ($headers) {
 	$headers['GitHub Plugin URI'] = 'GitHub Plugin URI';
-	$headers['GitHub Plugin Folder'] = 'GitHub Plugin Folder';
 	return $headers;
 });
 
@@ -37,8 +36,7 @@ if (!class_exists('WordPress_GitHub_Updater')) {
 		private $plugin_file;
 		private $plugin_slug;
 		private $plugin_data;
-		private $github_repo;
-		private $github_folder;
+	private $github_repo;
 		private $version;
 
 		public function __construct($plugin_file)
@@ -54,13 +52,11 @@ if (!class_exists('WordPress_GitHub_Updater')) {
 
 			// Read GitHub config from plugin headers
 			$this->github_repo = $this->plugin_data['GitHub Plugin URI'];
-			$this->github_folder = $this->plugin_data['GitHub Plugin Folder'];
 			$this->version = $this->plugin_data['Version'];
 
 			// set up wordpress hooks
 			if ($this->github_repo) {
 				add_filter('pre_set_site_transient_update_plugins', array($this, 'check_for_update'));
-				add_filter('upgrader_source_selection', array($this, 'fix_source_folder'), 10, 4);
 				add_action('admin_init', array($this, 'show_update_notification'));
 			}
 		}
@@ -140,9 +136,8 @@ if (!class_exists('WordPress_GitHub_Updater')) {
 
 		private function get_remote_version()
 		{
-			// If no GitHub folder specified, look in root
-			$file_path = $this->github_folder ? $this->github_folder . '/' : '';
-			$file_path .= basename($this->plugin_file);
+			// Plugin is expected to be at repository root
+			$file_path = basename($this->plugin_file);
 			
 			$request = wp_remote_get('https://api.github.com/repos/' . $this->github_repo . '/contents/' . $file_path);
 
@@ -167,59 +162,7 @@ if (!class_exists('WordPress_GitHub_Updater')) {
 			return 'https://github.com/' . $this->github_repo . '/archive/refs/heads/main.zip';
 		}
 
-		/**
-		 * STEP 5: Fix Subfolder Extraction
-		 * ================================
-		 */
-		public function fix_source_folder($source, $remote_source, $upgrader, $hook_extra)
-		{
-			if (isset($hook_extra['plugin']) && $hook_extra['plugin'] === $this->plugin_slug) {
-
-				// Get repository name from GitHub URI
-				$repo_parts = explode('/', $this->github_repo);
-				$repo_name = end($repo_parts);
-				
-				// GitHub creates folder with repo-name-branch format
-				$expected_folder = $repo_name . '-main';
-				
-				if ($this->github_folder) {
-					// If subfolder specified, navigate to it
-					$corrected_source = $remote_source . '/' . $expected_folder . '/' . $this->github_folder . '/';
-				} else {
-					// If no subfolder, use root of repository
-					$corrected_source = $remote_source . '/' . $expected_folder . '/';
-				}
-
-				if (is_dir($corrected_source)) {
-					return $corrected_source;
-				} else {
-					// Try to find the actual folder structure
-					if (is_dir($remote_source)) {
-						$dirs = scandir($remote_source);
-						foreach ($dirs as $dir) {
-							if ($dir !== '.' && $dir !== '..' && is_dir($remote_source . '/' . $dir)) {
-								
-								if ($this->github_folder) {
-									// Check if this directory contains our plugin folder
-									$potential_plugin_path = $remote_source . '/' . $dir . '/' . $this->github_folder . '/';
-									if (is_dir($potential_plugin_path)) {
-										return $potential_plugin_path;
-									}
-								} else {
-									// Check if this directory contains the main plugin file
-									$potential_plugin_path = $remote_source . '/' . $dir . '/';
-									if (file_exists($potential_plugin_path . basename($this->plugin_file))) {
-										return $potential_plugin_path;
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-
-			return $source;
-		}
+		// No subfolder handling — plugin is expected at repo root
 	}
 }
 
