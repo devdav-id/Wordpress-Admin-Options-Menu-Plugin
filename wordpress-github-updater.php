@@ -6,7 +6,7 @@
  * It checks for new releases and integrates with WordPress's native update system.
  * 
  * @package DDID_Tools
- * @version 1.0.0
+ * @version 1.0.2
  */
 
 // If this file is called directly, abort.
